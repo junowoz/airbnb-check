@@ -93,3 +93,10 @@ def format_wifi(nets: list[Network]) -> str:
                      "System Settings > Privacy & Security > Location Services, then retry.")
     lines.append("\nA hidden-camera hotspot is rare (most cameras join the host's Wi-Fi). Strong signal = close to you.")
     return "\n".join(lines)
+
+
+
+def analyze(nets: list[Network]) -> dict:
+    """Summary used by the `all` mode: counts and camera-like SSIDs (redacted names are not matched)."""
+    hits = [(n.ssid, h, n.strong) for n in nets if (h := flag_ssid(n.ssid))]
+    return {"seen": len(nets), "redacted": sum("redacted" in n.ssid.lower() for n in nets), "flagged": hits}

@@ -3,33 +3,47 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
-from . import __version__, checklist, oui, report, wifi
+from . import __version__, allmode, checklist, i18n, oui, report, wifi
 from .net import ScanError
 
-COMMANDS = ("scan", "wifi", "checklist", "update-oui")
+COMMANDS = ("all", "scan", "wifi", "checklist", "update-oui")
 
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
     common.add_argument("--timeout", type=float, metavar="SEC", help="per-connection timeout in seconds (default 1.0)")
-    common.add_argument("--lang", choices=("en", "pt", "es"), help="checklist language (default en)")
+    common.add_argument("--lang", choices=i18n.LANGS, help="output language (default: from LANG / LC_ALL)")
+    common.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    common.add_argument("--report", nargs="?", const="", metavar="FILE.md",
+                        help="also write a Markdown report (default name airbnb-check-YYYYMMDD-HHMM.md)")
+    common.add_argument("--full", action="store_true", help="probe all ports 1-65535 (slow)")
+    common.add_argument("--offline", action="store_true", help="never download anything (skip the vendor list update)")
     p = argparse.ArgumentParser(
         prog="airbnb-check", parents=[common],
         description="Defensive, read-only check of the Wi-Fi you are a guest on for hidden cameras. "
                     "Only scans your own private subnet; never logs in to or changes any device. "
-                    "With no command, runs `scan`.")
+                    "With no command, runs `all`: vendor list, network scan, nearby Wi-Fi, verdict and checklist.")
     p.add_argument("--version", action="version", version=f"airbnb-check {__version__}")
-    sub = p.add_subparsers(dest="command", metavar="{scan,wifi,checklist,update-oui}")
-    s = sub.add_parser("scan", parents=[common], help="scan the current network (default)")
-    s.add_argument("--full", action="store_true", help="probe all ports 1-65535 (slow)")
-    s.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    s.add_argument("--report", metavar="FILE.md", help="also write a Markdown report")
+    sub = p.add_subparsers(dest="command", metavar="{all,scan,wifi,checklist,update-oui}")
+    sub.add_parser("all", parents=[common], help="everything in one go (default)")
+    sub.add_parser("scan", parents=[common], help="scan the current network only")
     sub.add_parser("wifi", parents=[common], help="list nearby Wi-Fi networks and flag camera-like SSIDs")
     sub.add_parser("checklist", parents=[common], help="print the physical inspection checklist")
     sub.add_parser("update-oui", parents=[common], help="download the IEEE MAC vendor list (needs internet)")
     return p
+
+
+def _report_path(a: argparse.Namespace) -> Path:
+    return Path(a.report or datetime.now().strftime("airbnb-check-%Y%m%d-%H%M.md"))
+
+
+def _write_report(a: argparse.Namespace, text: str) -> None:
+    path = _report_path(a)
+    path.write_text(text, encoding="utf-8")
+    print(i18n.t(a.lang, "report_written", path=path), file=sys.stderr)
 
 
 def cmd_scan(a: argparse.Namespace) -> int:
@@ -37,9 +51,17 @@ def cmd_scan(a: argparse.Namespace) -> int:
     quiet = a.json or not sys.stderr.isatty()
     res = run_scan(a.timeout, a.full, (lambda m: None) if quiet else report.say_stderr)
     print(report.to_json(res) if a.json else report.format_table(res, report.use_color(sys.stdout)))
-    if a.report:
-        Path(a.report).write_text(report.to_markdown(res), encoding="utf-8")
-        print(f"Report written to {a.report}", file=sys.stderr)
+    if a.report is not None:
+        _write_report(a, report.to_markdown(res))
+    return 0
+
+
+def cmd_all(a: argparse.Namespace, raw: list[str]) -> int:
+    detail = report.say_stderr if (sys.stderr.isatty() and not a.json) else (lambda m: None)
+    res = allmode.run_all(a, raw, report.say_stderr, detail)
+    print(allmode.to_json(res) if a.json else allmode.format_text(res, report.use_color(sys.stdout)))
+    if a.report is not None:
+        _write_report(a, allmode.to_markdown(res))
     return 0
 
 
@@ -55,9 +77,14 @@ def cmd_update_oui(_: argparse.Namespace) -> int:
 def _main(argv: list[str] | None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not any(a in COMMANDS for a in args) and not {"-h", "--help", "--version"} & set(args):
-        args.insert(0, "scan")  # default command
+        args.insert(0, "all")  # default command
     a = build_parser().parse_args(args)
-    a.timeout, a.lang = getattr(a, "timeout", 1.0), getattr(a, "lang", "en")  # SUPPRESS parents: apply defaults here
+    # SUPPRESS parents: apply defaults here
+    a.timeout, a.lang = getattr(a, "timeout", 1.0), getattr(a, "lang", None) or i18n.detect_lang()
+    for k, v in (("json", False), ("full", False), ("offline", False), ("report", None)):
+        setattr(a, k, getattr(a, k, v))
+    if a.command == "all":
+        return cmd_all(a, args)
     if a.command == "scan":
         return cmd_scan(a)
     if a.command == "wifi":

@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -47,11 +48,19 @@ def is_locally_administered(mac: str) -> bool:
         return False
 
 
-def update(path: Path | None = None) -> int:
+def is_stale(path: Path | None = None, days: int = 90) -> bool:
+    p = path or cache_path()
+    try:
+        return time.time() - p.stat().st_mtime > days * 86400
+    except OSError:
+        return True
+
+
+def update(path: Path | None = None, timeout: float = 60) -> int:
     """Download the IEEE CSV over HTTPS to the cache; returns number of entries."""
     p = path or cache_path()
     req = Request(OUI_URL, headers={"User-Agent": "airbnb-check"})
-    with urlopen(req, timeout=60) as r:
+    with urlopen(req, timeout=timeout) as r:
         data = r.read().decode("utf-8", "replace")
     table = parse_oui(data)
     if not table:

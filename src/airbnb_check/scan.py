@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
@@ -17,6 +18,8 @@ class ScanResult:
     oui_loaded: bool
     full: bool
     notes: list[str] = field(default_factory=list)
+    passes: int = 1
+    gap: float = 0.0
 
 
 def _safe(fn: Callable[[], dict], say: Callable[[str], None], what: str) -> dict:
@@ -27,20 +30,44 @@ def _safe(fn: Callable[[], dict], say: Callable[[str], None], what: str) -> dict
         return {}
 
 
-def run_scan(timeout: float, full: bool, say: Callable[[str], None]) -> ScanResult:
-    info = net.detect()
-    net.check_target(info.network)
-    say(f"Interface {info.iface or '?'}  {info.ip}  network {info.network}  gateway {info.gateway or '?'}")
-    if info.clamped:
-        say(f"  (interface netmask is larger than /24; limiting scan to {info.network})")
-    say("Discovering hosts (ping sweep + SSDP + ONVIF + mDNS)...")
+def _discover(info: net.NetInfo, timeout: float, say: Callable[[str], None]):
     with ThreadPoolExecutor(3) as ex:
         f_ssdp = ex.submit(_safe, lambda: net.ssdp(info), say, "SSDP")
         f_wsd = ex.submit(_safe, lambda: net.wsd_onvif(info), say, "ONVIF")
         f_mdns = ex.submit(_safe, lambda: net.mdns(info), say, "mDNS")
         alive = net.sweep(info.network, timeout)
         upnp, onvif, mdns = f_ssdp.result(), f_wsd.result(), f_mdns.result()
-    arp = net.arp_table(info)
+    return alive, upnp, onvif, mdns, net.arp_table(info)
+
+
+def run_scan(timeout: float, full: bool, say: Callable[[str], None], passes: int = 1, gap: float = 5.0,
+             early: Callable[[net.NetInfo], None] | None = None) -> ScanResult:
+    info = net.detect()
+    net.check_target(info.network)
+    say(f"Interface {info.iface or '?'}  {info.ip}  network {info.network}  gateway {info.gateway or '?'}")
+    if info.clamped:
+        say(f"  (interface netmask is larger than /24; limiting scan to {info.network})")
+    if early:
+        early(info)  # may re-exec the whole process
+    alive: set[str] = set()
+    upnp: dict[str, dict[str, str]] = {}
+    onvif: dict[str, str] = {}
+    mdns: dict[str, list[str]] = {}
+    arp: dict[str, str] = {}
+    for i in range(passes):
+        if i:
+            say(f"Waiting {gap:g} s before discovery pass {i + 1} (some cameras sleep)...")
+            time.sleep(gap)
+        say(f"Discovering hosts, pass {i + 1}/{passes} (ping sweep + SSDP + ONVIF + mDNS)...")
+        a, u, o, m, r = _discover(info, timeout, say)
+        alive |= a
+        for ip, d in u.items():
+            upnp.setdefault(ip, {}).update(d)
+        onvif.update(o)
+        for ip, items in m.items():
+            cur = mdns.setdefault(ip, [])
+            cur += [x for x in items if x not in cur]
+        arp.update(r)
 
     hosts = set(alive) | set(arp) | set(upnp) | set(onvif) | set(mdns) | {info.ip}
     if info.gateway:
@@ -67,7 +94,7 @@ def run_scan(timeout: float, full: bool, say: Callable[[str], None]) -> ScanResu
         devices.append(score(d))
     notes = []
     if not arp and len(hosts) > 1:
-        notes.append("ARP table came back empty: MAC addresses and vendors are unavailable. On macOS this can happen when "
-                     "this Python lacks Local Network permission. Run it with Apple's Python instead: "
-                     "`/usr/bin/python3 -m airbnb_check`, or install with `uv tool install --python /usr/bin/python3 ...`.")
-    return ScanResult(info, devices, bool(table), full, notes)
+        notes.append("ARP table came back empty: MAC addresses and vendors are unavailable. On macOS, allow your terminal "
+                     "under System Settings > Privacy & Security > Local Network, or run `/usr/bin/python3 -m airbnb_check`. "
+                     "Processes started by `uvx` cannot read MACs on macOS: use `uv tool install` or `./run.sh` instead.")
+    return ScanResult(info, devices, bool(table), full, notes, passes, gap if passes > 1 else 0.0)

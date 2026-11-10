@@ -35,7 +35,7 @@ def _vendor(d: Device) -> str:
     return d.vendor or d.upnp.get("manufacturer", "") or ("(random MAC)" if d.local_admin else "?" if d.mac else "")
 
 
-def format_table(res: ScanResult, color: bool) -> str:
+def format_table(res: ScanResult, color: bool, summary: bool = True) -> str:
     head = f"{'IP':<15} {'LEVEL':<12} {'MAC':<17} {'VENDOR':<26} {'PORTS':<16} NOTES"
     lines = [head, "-" * len(head)]
     for d in res.devices:
@@ -50,8 +50,9 @@ def format_table(res: ScanResult, color: bool) -> str:
             lines.append(f"\n{d.ip} ({d.label}):")
             lines += [f"  [{LEVELS[l]}] {t}" for l, t in shown]
     lines += [""] + [f"Note: {n}" for n in res.notes]
-    lines += [f"Verdict: {verdict(res.devices)}", LIMITS, POINTER]
-    if not res.oui_loaded:
+    if summary:
+        lines += [f"Verdict: {verdict(res.devices)}", LIMITS, POINTER]
+    if summary and not res.oui_loaded:
         lines.append(HINT_OUI)
     return "\n".join(lines)
 
@@ -67,6 +68,16 @@ def to_dict(res: ScanResult) -> dict:
 
 def to_json(res: ScanResult) -> str:
     return json.dumps(to_dict(res), indent=2)
+
+
+def md_devices(res: ScanResult) -> list[str]:
+    out = ["| IP | Level | MAC | Vendor | Ports | Notes |", "|---|---|---|---|---|---|"]
+    for d in res.devices:
+        out.append(f"| {d.ip} | {d.label} | {d.mac} | {_vendor(d)} | {','.join(map(str, d.ports))} | {_notes(d)} |")
+    for d in res.devices:
+        if d.reasons:
+            out += ["", f"### {d.ip} ({d.label})"] + [f"- [{LEVELS[l]}] {t}" for l, t in d.reasons]
+    return out
 
 
 def to_markdown(res: ScanResult) -> str:
