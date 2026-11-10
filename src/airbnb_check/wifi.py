@@ -4,7 +4,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .net import IS_MAC, ScanError, run
+from .net import IS_MAC, ScanError, exe, run
+from .textutil import clean
 
 SSID_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"(^|[^a-z])ipc(am)?([^a-z]|$)", "IPC / IPCAM"), (r"hdwificam", "HDWiFiCam"),
@@ -50,28 +51,48 @@ def parse_macos(text: str) -> list[Network]:
             if name_indent < 0:
                 name_indent = indent
             if indent == name_indent and s.endswith(":"):
-                nets.append(Network(s[:-1]))
+                nets.append(Network(clean(s[:-1], 60)))
             elif nets and (m := re.match(r"Signal / Noise:\s*(-?\d+) dBm", s)):
                 nets[-1].signal_dbm = int(m.group(1))
     return nets
 
 
+def _split_terse(line: str) -> list[str]:
+    """Split an `nmcli -t` line on unescaped colons and unescape `\\:` and `\\\\`."""
+    parts, cur, i = [], [], 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and i + 1 < len(line):
+            cur.append(line[i + 1])
+            i += 2
+            continue
+        if c == ":":
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
 def parse_nmcli(text: str) -> list[Network]:
     nets = []
     for line in text.splitlines():
-        parts = re.split(r"(?<!\\):", line)
-        if len(parts) >= 3 and parts[2].isdigit():
-            nets.append(Network(parts[0].replace("\\:", ":"), signal_pct=int(parts[2]), bssid=parts[1].replace("\\:", ":")))
+        parts = _split_terse(line)
+        if len(parts) >= 3 and parts[-1].isascii() and parts[-1].isdigit():
+            # SSID first, signal last; BSSID (colons were escaped) in between
+            nets.append(Network(clean(parts[0], 60), signal_pct=int(parts[-1]), bssid=clean(parts[1], 17)))
     return nets
 
 
 def scan_wifi() -> list[Network]:
     if IS_MAC:
-        out = run(["system_profiler", "SPAirPortDataType"], timeout=40)
+        out = run([exe("system_profiler"), "SPAirPortDataType"], timeout=40)
         if not out:
             raise ScanError("`system_profiler` returned nothing; cannot list Wi-Fi networks")
         return parse_macos(out)
-    out = run(["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL", "dev", "wifi"], timeout=20)
+    out = run([exe("nmcli"), "-t", "-f", "SSID,BSSID,SIGNAL", "dev", "wifi"], timeout=20)
     if not out:
         raise ScanError("`nmcli` not found or returned nothing (NetworkManager required on Linux)")
     return parse_nmcli(out)

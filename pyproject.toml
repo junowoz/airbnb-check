@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "airbnb-check"
-version = "0.1.0"
+version = "0.2.0"
 description = "Defensive, read-only check of a short-term rental's Wi-Fi for hidden cameras"
 readme = "README.md"
 license = { text = "MIT" }

@@ -41,6 +41,12 @@ class Device:
     upnp: dict[str, str] = field(default_factory=dict)
     onvif: str | None = None
     mdns: list[str] = field(default_factory=list)
+    hostname: str = ""
+    kind: str = "unknown"      # see classify.KINDS
+    detail: str = ""           # short evidence for the kind
+    suspect: bool = False      # camera-like signals without proof
+    deep: bool = False         # full port pass done
+    scanned: int = 0           # ports checked by the deep pass
     level: int = INFO
     reasons: list[tuple[int, str]] = field(default_factory=list)
 
@@ -69,8 +75,8 @@ def banner_signal(text: str) -> tuple[int, str] | None:
     return None
 
 
-def _banner_text(d: Device) -> str:
-    parts = [v for b in d.banners.values() for k, v in b.items() if k in ("server", "realm", "title")]
+def banner_text(d: Device) -> str:
+    parts = [v for b in d.banners.values() for k, v in b.items() if k in ("server", "realm", "title", "raw")]
     return " ".join(parts + [d.upnp.get("model", ""), d.upnp.get("name", ""), d.upnp.get("server", "")])
 
 
@@ -84,14 +90,20 @@ def score(d: Device) -> Device:
     for m in d.mdns:
         if m.startswith(("_rtsp._tcp", "_onvif._tcp")):
             sig.append((HIGH, f"advertises {m.split(':')[0]} via mDNS"))
+    if re.search(r"camera|networkvideo", d.upnp.get("types", ""), re.I):
+        sig.append((HIGH, f"UPnP device type is a camera ({d.upnp['types']})"))
+    if not d.is_self:  # DHCP can make any device the "gateway": camera-protocol ports always count
+        for p in d.ports:
+            if p in PORT_SIGNALS and p not in rtsp_ports and PORT_SIGNALS[p][0] == HIGH:
+                sig.append(PORT_SIGNALS[p])
     if not (d.is_self or d.is_gateway):  # routers/this machine only count on strong protocol evidence
         for text in (d.vendor, d.upnp.get("manufacturer", "")):
             if (v := vendor_signal(text)):
                 sig.append((v[0], f"vendor matches camera maker keyword '{v[1]}' ({text})"))
         for p in d.ports:
-            if p in PORT_SIGNALS and p not in rtsp_ports:
+            if p in PORT_SIGNALS and p not in rtsp_ports and PORT_SIGNALS[p][0] != HIGH:
                 sig.append(PORT_SIGNALS[p])
-        if (b := banner_signal(_banner_text(d))):
+        if (b := banner_signal(banner_text(d))):
             sig.append((b[0], f"banner/description mentions '{b[1]}'"))
     if d.local_admin:
         sig.append((INFO, "randomized (locally administered) MAC: vendor cannot be identified"))

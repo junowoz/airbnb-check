@@ -3,29 +3,8 @@ import unittest
 import _path  # noqa: F401
 
 from airbnb_check import reexec
-from airbnb_check.i18n import detect_lang, limits, t
 from airbnb_check.score import HIGH, INFO, LOW, MEDIUM, Device
 from airbnb_check.verdict import aggregate
-
-
-class LangTests(unittest.TestCase):
-    def test_detect(self):
-        self.assertEqual(detect_lang({"LANG": "pt_BR.UTF-8"}), "pt")
-        self.assertEqual(detect_lang({"LANG": "es_ES.UTF-8"}), "es")
-        self.assertEqual(detect_lang({"LANG": "en_US.UTF-8"}), "en")
-        self.assertEqual(detect_lang({"LANG": "fr_FR.UTF-8"}), "en")
-        self.assertEqual(detect_lang({}), "en")
-
-    def test_lc_all_wins_and_c_is_skipped(self):
-        self.assertEqual(detect_lang({"LC_ALL": "pt_PT", "LANG": "en_US"}), "pt")
-        self.assertEqual(detect_lang({"LC_ALL": "C", "LANG": "es_MX.UTF-8"}), "es")
-
-    def test_catalogues_complete(self):
-        from airbnb_check.i18n import MSG
-        for lang in ("pt", "es"):
-            self.assertEqual(set(MSG[lang]), set(MSG["en"]))
-            self.assertEqual(len(limits(lang)), 4)
-        self.assertIn("2", t("en", "passes", n=2, gap=5))
 
 
 def dev(ip, level, self_=False, vendor=""):

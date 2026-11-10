@@ -6,14 +6,29 @@ import io
 import os
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.error import URLError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from .textutil import clean
 
 OUI_URL = "https://standards-oui.ieee.org/oui/oui.csv"
+MAX_BYTES = 10 * 1024 * 1024
 
 
 def cache_path() -> Path:
+    """AIRBNB_CHECK_CACHE (a directory) wins; run.sh points it at a temp dir so nothing persists."""
+    override = os.environ.get("AIRBNB_CHECK_CACHE")
+    if override:
+        return Path(override) / "oui.csv"
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return Path(base) / "airbnb-check" / "oui.csv"
+
+
+class _HttpsOnly(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith("https://"):
+            raise URLError("refusing redirect to non-HTTPS URL")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def parse_oui(text: str) -> dict[str, str]:
@@ -21,7 +36,7 @@ def parse_oui(text: str) -> dict[str, str]:
     table: dict[str, str] = {}
     for row in csv.reader(io.StringIO(text)):
         if len(row) >= 3 and len(row[1]) == 6 and all(c in "0123456789ABCDEFabcdef" for c in row[1]):
-            table[row[1].upper()] = row[2].strip()
+            table[row[1].upper()] = clean(row[2], 60)
     return table
 
 
@@ -57,14 +72,30 @@ def is_stale(path: Path | None = None, days: int = 90) -> bool:
 
 
 def update(path: Path | None = None, timeout: float = 60) -> int:
-    """Download the IEEE CSV over HTTPS to the cache; returns number of entries."""
+    """Download the IEEE CSV over HTTPS (size-capped) and replace the cache atomically; returns number of entries."""
     p = path or cache_path()
-    req = Request(OUI_URL, headers={"User-Agent": "airbnb-check"})
-    with urlopen(req, timeout=timeout) as r:
-        data = r.read().decode("utf-8", "replace")
-    table = parse_oui(data)
-    if not table:
+    if not OUI_URL.startswith("https://"):
+        raise ValueError("vendor list URL must be HTTPS")
+    with build_opener(_HttpsOnly).open(Request(OUI_URL, headers={"User-Agent": "airbnb-check"}), timeout=timeout) as r:
+        raw, end = b"", time.monotonic() + timeout
+        while len(raw) <= MAX_BYTES:
+            chunk = r.read(65536)
+            if not chunk:
+                break
+            raw += chunk
+            if time.monotonic() > end:  # a slow-drip server on a hostile network must not stall the scan
+                raise ValueError("vendor list download too slow; giving up")
+    if len(raw) > MAX_BYTES:
+        raise ValueError("vendor list is larger than 10 MB; refusing it")
+    data = raw.decode("utf-8", "replace")
+    entries = len(parse_oui(data))
+    if not entries:
         raise ValueError("downloaded file did not look like the IEEE OUI CSV")
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(data, encoding="utf-8")
-    return len(table)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return entries

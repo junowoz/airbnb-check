@@ -1,78 +1,111 @@
 # airbnb-check
 
-A small, read-only command line tool that helps a **guest** check the Wi-Fi of a short-term rental (Airbnb, Vrbo, hotel...) for hidden cameras. Pure Python standard library, no root, no dependencies.
+Run one command on a rental's Wi-Fi and get a clear answer: **camera found, suspicious device, or no camera on this network**. Read-only, nothing installed, Python standard library only.
 
-It looks at the network you are already connected to and flags devices that behave like IP cameras: ONVIF/RTSP responders, camera-maker MAC vendors, typical camera ports and web banners, and Wi-Fi hotspots with camera-like names. It then points you to a physical inspection checklist, because software alone can never prove a room is clean.
-
-## Quick start
-
-```bash
-uv tool install git+https://github.com/junowoz/airbnb-check && airbnb-check   # install once, then just `airbnb-check`
-git clone https://github.com/junowoz/airbnb-check && cd airbnb-check && ./run.sh   # or from a clone, no install
+```sh
+curl -fsSL https://raw.githubusercontent.com/junowoz/airbnb-check/main/run.sh | sh
 ```
 
-The repo is private for now: you need GitHub access (`gh auth login` or an SSH key) for the first two. Requires Python 3.9+ on macOS or Linux, no third-party packages. `pipx install git+https://github.com/junowoz/airbnb-check` works too.
+That downloads the source into a temporary folder, runs it, and deletes everything when it ends (including the vendor-name cache). It needs `python3` 3.9+ and `curl` or `wget`; on macOS that means the Xcode Command Line Tools (`xcode-select --install`, once). It takes about a minute.
 
-## Usage
+Prefer to read the script before running it?
 
-Bare `airbnb-check` runs everything in order: refresh the MAC vendor list (if missing or older than 90 days), scan the network (two discovery passes ~5 s apart, because some cameras sleep), check nearby Wi-Fi for camera-like names, then print a verdict box (overall level, flagged items and why, what the check cannot see) and the full physical checklist. Progress goes to stderr, results to stdout. Language follows `LANG`/`LC_ALL` (en, pt, es); override with `--lang`.
-
-```bash
-airbnb-check                      # everything (same as `airbnb-check all`)
-airbnb-check --report             # also write airbnb-check-YYYYMMDD-HHMM.md (or --report out.md)
-airbnb-check --json               # one combined JSON object: scan + wifi + verdict
-airbnb-check --offline            # never download the vendor list
-airbnb-check --lang pt            # pt, es, en
-airbnb-check scan                 # network scan only (also: wifi, checklist, update-oui)
-airbnb-check --full scan          # probe all 65535 ports per host (slow)
-airbnb-check --timeout 2          # slower networks
+```sh
+curl -fsSL https://raw.githubusercontent.com/junowoz/airbnb-check/main/run.sh -o run.sh && less run.sh && sh run.sh
 ```
 
-Each device gets **HIGH / MEDIUM / LOW / INFO** with the reasons listed. The gateway is labelled `ROUTER` and your machine `THIS DEVICE`. Output is plain text when not on a TTY and `NO_COLOR` is honored. Tip: join the rental's main Wi-Fi, and run it again after a few minutes.
+From a clone: `git clone https://github.com/junowoz/airbnb-check && cd airbnb-check && ./run.sh`. Extra options go after `--` when piped, for example `... | sh -s -- --report`.
 
-## Notes
+## What you see
 
-- **macOS and MAC addresses:** Homebrew/uv Pythons get an empty ARP table because of Local Network privacy; Apple's `/usr/bin/python3` does not. `airbnb-check` detects this early and transparently re-runs itself under `/usr/bin/python3` (env `AIRBNB_CHECK_REEXEC` prevents loops). Exception: a process started by `uvx` cannot read MACs even under Apple's Python, so prefer `uv tool install` or `./run.sh` if the MAC column is empty. Otherwise allow your terminal in System Settings > Privacy & Security > Local Network.
-- **Wi-Fi names on macOS** show as `<redacted>` unless your terminal has Location permission; the tool says so when it happens.
+```
+  airbnb-check 0.2.0
+  hidden-camera check for the Wi-Fi you are on  (read-only, nothing is installed or changed)
+  en0  192.168.0.4  network 192.168.0.0/24  gateway 192.168.0.1
 
-## Safe by design
+  ✓  Finding devices  5 devices (2 passes, some cameras sleep)
+  ✓  Probing services  4 open ports
+  ✓  Identifying devices  3 names found, vendor list: up to date
+  ✓  Deep check of unidentified devices  everything was identified, nothing to dig into
+  ✓  Nearby Wi-Fi  44 Wi-Fi networks seen, 0 with camera-like names.
 
-- Scans **only the subnet of your own active interface**, and refuses anything that is not a private RFC1918 range (10/8, 172.16/12, 192.168/16) of /24 or smaller.
-- Read-only probes: ping, TCP connect, `HTTP GET /`, RTSP `OPTIONS`, SSDP/ONVIF/mDNS discovery. It never tries logins, default passwords or exploits, and never writes to a device.
-- Short timeouts and bounded concurrency (at most 300 threads).
-- No `sudo`, no `nmap`. The only internet access is the IEEE vendor list download (HTTPS, cached in `~/.cache/airbnb-check`, skipped with `--offline`).
+STATUS  IP           WHAT IT IS               PORTS               NAME / VENDOR
+ok      192.168.0.1  router                   80,443,49152,49153
+ok      192.168.0.4  this computer
+ok      192.168.0.6  TV / media               7678,8001,8002+     [TV] Samsung 4 Series (Samsung)
+ok      192.168.0.7  phone / tablet / laptop  49152,62078         iPhone sync port
 
-## What it cannot detect
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ✓  NO CAMERA ON THIS NETWORK                                                 │
+│                                                                              │
+│ Checked 4 devices, all identified: 1 router, 1 this computer, 1 phone /      │
+│   tablet / laptop, 1 TV / media.                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
 
-- Cameras on **another VLAN or a separate guest network** than the one you joined.
-- **4G/cellular** cameras and anything that is not on the Wi-Fi.
-- **SD-card-only recorders** and any device that is **powered off** or asleep during the scan.
-- Cameras that use random MAC addresses, custom ports and no discovery protocol will only show as unknown devices.
+A network check cannot see cameras that use 4G or only record to an SD card. Do the 2-minute physical check below.
+```
 
-A clean scan is a good sign, not proof. Always do the physical check (`airbnb-check checklist`).
+## What it checks
 
-## Airbnb policy
+- **Devices**: two discovery passes (ping/TCP sweep, ARP, SSDP/UPnP, ONVIF WS-Discovery, mDNS) because some cameras sleep.
+- **Names**: reverse DNS, mDNS host names, NetBIOS names, UPnP device descriptions, and the MAC vendor (IEEE list).
+- **Services**: usual camera, TV and printer ports, HTTP titles and `Server` headers, RTSP `DESCRIBE`.
+- **Deep pass** on every device that is still unknown or suspicious: all 65535 TCP ports (usual ports first, bounded time), banners, RTSP, and the title of every web port.
+- **Nearby Wi-Fi** names that look like camera hotspots (IPC-, CAM-, V380, Yoosee, ESP_, ...).
 
-Since 2024 Airbnb bans indoor security cameras and recording devices in all listings, and outdoor cameras must be disclosed and cannot watch indoor spaces or private areas like a bathroom. If you find one, do not touch it, photograph it, leave if you feel unsafe, and report it in the Airbnb app. For a camera in a bedroom or bathroom, contact the police.
+Every device ends up as: router, this computer, phone/tablet/laptop, TV/media, printer, smart-home/IoT, **camera**, or other. Evidence shown for each is technical and short (for example "answered an ONVIF WS-Discovery probe").
 
-## Legal and ethics
+## What the verdicts mean
 
-Use this tool **only on networks you are authorized to use as a guest**. It is meant to protect your own privacy, not to inspect other people's networks. You are responsible for how you use it. Provided as is, without warranty (MIT).
+| Verdict | Meaning | What to do |
+|---|---|---|
+| **CAMERA FOUND** (red) | A device proved itself a camera: ONVIF reply, RTSP server, camera-maker MAC, camera ports/banner. | Photograph it, do not touch it, leave if unsafe, report in the Airbnb app (indoor cameras are banned). In a bedroom or bathroom, call the police. |
+| **SUSPICIOUS DEVICE** (yellow) | Camera-like signals but no proof, such as an Espressif/Tuya chip with web or RTSP-like ports, or a camera-like Wi-Fi name with a strong signal. | The box tells you what to look for in the room. |
+| **NOT SURE: SOME CHECKS FAILED** (yellow) | No camera found, but a check did not work (no other device answered, MAC addresses unreadable, a discovery method failed, a device could not be analyzed). | Fix what the box lists (for example Local Network permission) and run again. Never read it as clear. |
+| **NO CAMERA ON THIS NETWORK** (green) | Every device was identified, or cleared by the deep pass as having no camera services. | Still do the 2-minute physical check printed below the verdict. |
+
+## What it cannot see
+
+Cameras on 4G, cameras that only record to an SD card, devices that are off or asleep, and anything on another VLAN or a separate guest network. A green result means the network is clean, not that the room is. Always do the physical check (`airbnb-check checklist` prints the full list).
+
+## Safety and ethics
+
+- **Read-only.** Ping, TCP connect, `HTTP GET /`, RTSP `DESCRIBE`, SSDP/ONVIF/mDNS/NetBIOS discovery. No logins, no default passwords, no exploits, no writes to any device. No `sudo`, no `nmap`.
+- **Only your own subnet.** Private RFC1918 ranges only, never more than your local /24 (a larger netmask is clamped and the tool says so).
+- **Untrusted input.** Everything a device sends (names, banners, SSIDs) is stripped of terminal escape codes and control characters before display; UPnP descriptions are fetched only from the responding device inside your subnet, size-capped, and parsed without an XML parser.
+- **Internet access**: only the IEEE vendor list over HTTPS (size-capped, atomic write), plus the download of the script itself when piped.
+- Use it **only as a guest on a network you were given access to**. Provided as is, without warranty (MIT).
+
+## Options
+
+```
+airbnb-check [scan | wifi | checklist | update-oui] [--report [FILE.md]] [--json] [--offline] [--timeout SEC] [--full]
+```
+
+`--report` writes a Markdown report, `--json` prints one JSON object, `--offline` skips the vendor list, `--full` runs the fast pass over all ports for every device (slow). `NO_COLOR` is honored, and output falls back to plain text and ASCII when not on a TTY or when the locale is not UTF-8. To run it without `run.sh`: `PYTHONPATH=src python3 -m airbnb_check`.
+
+## macOS notes
+
+- **Python**: `run.sh` uses Apple's `/usr/bin/python3` (Xcode Command Line Tools), because Homebrew/uv Pythons cannot read MAC addresses (Local Network privacy). If you run another Python, the tool re-runs itself under Apple's automatically.
+- **Wi-Fi names** show as `<redacted>` unless your terminal has Location permission (System Settings > Privacy & Security > Location Services). The tool says so in one line and the network verdict does not depend on it.
+- If MAC addresses are still empty, allow your terminal under Privacy & Security > Local Network.
+
+## FAQ
+
+**Is a green result proof there is no camera?** No. It means no camera is reachable on this Wi-Fi. Do the physical check.
+
+**Can I run it on hotel or office Wi-Fi?** Only networks you are allowed to use. Captive-portal or client-isolated networks hide other devices, so you will see few of them.
+
+**Why does it take about a minute?** Two discovery passes 5 seconds apart, then a deep port pass on any device that is not obviously a phone, TV, printer or router.
+
+**A device is "other (not a camera)". Is that a guess?** It means the full port pass found no camera service (no RTSP, ONVIF, camera ports or camera banners). Filtered devices may be only partly scanned in the time limit; the table says how many ports were checked.
+
+**Airbnb policy**: since 2024 indoor security cameras are banned in all listings; outdoor cameras must be disclosed and cannot watch private areas.
 
 ## Development
 
-```bash
+```sh
 python3 -m unittest discover -s tests
 ```
 
-## Em português
-
-`airbnb-check` é uma ferramenta de linha de comando, somente leitura, para o hóspede verificar o Wi-Fi de um Airbnb em busca de câmeras escondidas. Só usa a biblioteca padrão do Python 3.9+, não precisa de root.
-
-- **Seguro por padrão:** escaneia apenas a sub-rede da sua própria interface, só aceita redes privadas (RFC1918) de /24 ou menores, nunca tenta senha, login ou exploit, e não altera nenhum aparelho.
-- **Começar:** `uv tool install git+https://github.com/junowoz/airbnb-check` e depois só `airbnb-check`, ou num clone: `./run.sh`. O repositório é privado por enquanto (precisa de acesso ao GitHub).
-- **Usar:** `airbnb-check` faz tudo em sequência (lista de fabricantes, varredura da rede em 2 passadas, Wi-Fi por perto, veredito e checklist completo no idioma do sistema; `--lang pt` força). `--report` grava um relatório `.md`, `--json` imprime tudo em JSON, `--offline` não baixa nada. Subcomandos: `scan`, `wifi`, `checklist`, `update-oui`.
-- **macOS:** o Python do Homebrew não lê endereços MAC (privacidade de Rede Local); o programa se reexecuta sozinho com `/usr/bin/python3`. Se rodar via `uvx` e a coluna MAC vier vazia, use `uv tool install` ou `./run.sh`.
-- **Não detecta:** câmeras em outra VLAN/rede de hóspedes, câmeras 4G, gravadores só com cartão SD, aparelhos desligados. Um resultado limpo não é prova: faça sempre a inspeção física.
-- **Airbnb:** desde 2024 proíbe câmeras internas; denuncie pelo app. Câmera em quarto ou banheiro é caso de polícia.
-- **Ética:** use somente em redes que você está autorizado a usar como hóspede.
+Stdlib only, Python 3.9+. Security issues: see [SECURITY.md](SECURITY.md).

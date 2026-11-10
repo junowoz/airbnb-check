@@ -21,14 +21,14 @@ def should_reexec(platform: str, executable: str, arp_has_macs: bool, env: Mappi
 def reexec(args: list[str], say: Callable[[str], None]) -> None:
     """Replace this process (only returns if exec fails)."""
     pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = dict(os.environ)
-    env["PYTHONPATH"] = pkg_parent + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT")}
+    env["PYTHONPATH"] = pkg_parent  # only our own code, never whatever the caller's environment had
     env[ENV_FLAG] = "1"
     say("macOS blocks this Python from reading MAC addresses (Local Network privacy); "
         "re-running with Apple's /usr/bin/python3...")
     try:
         sys.stdout.flush(); sys.stderr.flush()
-        os.execve(APPLE_PYTHON, [APPLE_PYTHON, "-m", "airbnb_check", *args], env)
+        os.execve(APPLE_PYTHON, [APPLE_PYTHON, "-B", "-s", "-m", "airbnb_check", *args], env)
     except OSError as e:
         say(f"  re-exec failed ({e}); continuing here, MAC addresses may be missing.")
 
